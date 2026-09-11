@@ -1,0 +1,1479 @@
+---
+title: "Befischungsauswertung"
+author: "Lena Graf"
+date: "2026-09-11"
+output: pdf_document
+---
+---
+title: "ÖFG Auswertung"
+author: "Lena"
+date: "2026-08-12"
+output:
+  pdf_document: 
+    latex_engine: xelatex
+
+---
+
+# 1 - Load packages
+```{r packages}
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(writexl) # noch nicht benutzt
+library(readxl) 
+library(ggplot2)
+library(ggrepel) # annotations in plot
+library(patchwork) 
+library(purrr)
+```
+
+
+# 2 - Data import
+
+```{r}
+
+##Paste the location of your import file, name of sheet should be DATA
+
+excel_path <- "~/Seafile/ÖFG 150/2 Daten/Rohdaten Gesamt/2000_Alle Daten.xlsx"
+
+sheet_name <- "DATA"
+
+##Excel is loaded into R and cleaned
+
+raw_excel <- read_excel(excel_path, sheet = sheet_name, col_types = "text")
+
+data <- raw_excel %>% 
+  janitor::clean_names()
+
+rm(raw_excel)
+  
+
+# Numeric robust aus Text (Komma/Punkt etc.)
+to_num <- function(x) {
+  x_chr <- as.character(x)
+  x_chr <- gsub(",", ".", x_chr)
+  x_chr <- gsub("[^0-9\\+\\-\\.eE]", "", x_chr)
+  suppressWarnings(as.numeric(x_chr))
+}
+
+
+## load data in the correct format
+
+data <- data %>%
+  mutate(
+    # --- Date ---
+    date = as.Date(as.numeric(date), origin ="1899-12-30"),
+
+    # --- Character ---
+    data_provider      = as.character(data_provider),
+    remark_raw_data           = as.character(remark_raw_data),
+    remark_import             = as.character(remark_import),
+    pit_dec                   = as.character(pit_dec),
+    pit_hex                   = as.character(pit_hex),
+    
+    #Faktor
+    country            = as.factor(country),
+    river_name         = as.factor(river_name),
+    source             = as.character(source),
+    project            = as.factor(project),
+    site_name          = as.factor(site_name),
+    method             = as.factor(method),
+    sampling_time      = as.factor(sampling_time),
+    assessment         = as.factor(assessment),
+    sample_id          = as.factor(sample_id),
+    species            = as.factor(species),
+    habitat            = as.factor(habitat),
+    fishing_district    = as.factor(fishing_district),
+    preclassification_stressor =  as.factor(preclassification_stressor),
+    type_of_strip             = as.factor(type_of_strip),
+    reader_id                 = as.factor(reader_id),
+
+    # --- Numeric ---
+    year               = to_num(year),
+    landmark_up        = to_num(landmark_up),
+    lat_up             = to_num(lat_up),
+    long_up            = to_num(long_up),
+    landmark_down      = to_num(landmark_down),
+    lat_down           = to_num(lat_down),
+    long_down          = to_num(long_down),
+    temp               = to_num(temp),
+    anodes             = to_num(anodes),
+    fished_length      = to_num(fished_length),
+    fished_width       = to_num(fished_width),
+    fish_id            = to_num(fish_id),
+    total_length       = to_num(total_length),
+    weight             = to_num(weight),
+    length_site         = to_num(length_site),
+    width_site          = to_num(width_site),
+    conductivity        = to_num(conductivity),
+    p_h_value             = to_num(p_h_value),
+    ox_cont             = to_num(ox_cont),
+    ox_sat              = to_num(ox_sat),
+    mean_water_depth    = to_num(mean_water_depth),
+    discharge           = to_num(discharge),
+    catch_efficiency    = to_num(catch_efficiency),
+    memory_id           = to_num(memory_id),
+
+    # --- Logical (TRUE/FALSE) ---
+
+    recapture                 = as.logical(recapture),
+    approval_required  = as.logical(approval_required)
+    
+
+  )
+
+
+
+str(data)
+
+
+#output for data
+
+
+#output directory for plots
+
+dir.create("plots", showWarnings = FALSE)
+
+
+
+
+```
+
+# 3 - Load Functions
+
+```{r}
+
+#Seber-LeCren 
+
+## working
+
+seber_le_cren_est <- function(C1, C2) {
+  
+  C1 <- as.numeric(C1)[1]
+  C2 <- as.numeric(C2)[1]
+  
+  if (!is.finite(C1) || !is.finite(C2)) {
+    return(tibble(
+      N = NA_real_,
+      Var_N = NA_real_,
+      sd_N = NA_real_,
+      CI_95 = NA_real_,
+      N_min = NA_real_,
+      N_max = NA_real_,
+      ok = FALSE,
+      msg = "Missing or non-numeric C1/C2"
+    ))
+  }
+  
+  if (C1 <= 0) {
+    return(tibble(
+      N = NA_real_,
+      Var_N = NA_real_,
+      sd_N = NA_real_,
+      CI_95 = NA_real_,
+      N_min = NA_real_,
+      N_max = NA_real_,
+      ok = FALSE,
+      msg = "C1 must be > 0"
+    ))
+  }
+  
+  if (C2 >= C1) {
+    return(tibble(
+      N = NA_real_,
+      Var_N = NA_real_,
+      sd_N = NA_real_,
+      CI_95 = NA_real_,
+      N_min = NA_real_,
+      N_max = NA_real_,
+      ok = FALSE,
+      msg = "C2 must be smaller than C1"
+    ))
+  }
+  
+  N <- C1^2 / (C1 - C2)
+  Var_N <- (C1^2 * C2^2 * (C1 + C2)) / (C1 - C2)^4
+  sd_N <- sqrt(Var_N)
+  CI_95 <- 2 * sd_N
+  
+  tibble(
+    N = round(N, 0),
+    Var_N = round(Var_N, 2),
+    sd_N = round(sd_N, 1),
+    CI_95 = round(CI_95, 0),
+    N_min = round(N - CI_95, 0),
+    N_max = round(N + CI_95, 0),
+    ok = TRUE,
+    msg = NA_character_
+  )
+}
+
+#DeLury 
+delury_est <- function(counts) {
+  
+  counts <- as.numeric(counts)
+
+  out_na <- function(msg, N = NA_real_) {
+    tibble(
+      N     = N,
+      Var_N = NA_real_,
+      sd_N  = NA_real_,
+      CI_95 = NA_real_,
+      N_min = NA_real_,
+      N_max = NA_real_,
+      ok    = FALSE,
+      msg   = msg
+    )
+  }
+  #checks for missing or non numeric values
+  if (any(!is.finite(counts))) {
+    return(out_na("Missing or non-numeric counts"))
+  }
+  
+  #checks number of runs
+  if (length(counts) < 3) {
+    return(out_na("DeLury needs >= 3 passes"))
+  }
+  
+  #checks if catches are positive
+  if (any(counts < 0)) {
+    return(out_na("Counts must be >= 0"))
+  }
+  
+  #checks if catches are zero
+  if (sum(counts) == 0) {
+    return(out_na("No fish caught"))
+  }
+  
+  #checks varation in runs - catches must be different for each run
+  if (length(unique(counts)) < 2) {
+    return(out_na("No depletion (all counts equal)"))
+  }
+  
+  # y = catches in run, x = cumulative catch before run
+  df <- tibble(
+    catch        = counts,
+    CumCatchPrev = c(0, cumsum(counts)[-length(counts)])
+  )
+  
+  #checks if linear model can be fitted
+  fit <- try(lm(catch ~ CumCatchPrev, data = df), silent = TRUE)
+  
+  if (inherits(fit, "try-error")) {
+    return(out_na("LM failed"))
+  }
+  
+  a <- unname(coef(fit)["(Intercept)"])
+  b <- unname(coef(fit)["CumCatchPrev"])
+  
+  #checks if coefficients are valid
+  if (!is.finite(a) || !is.finite(b)) {
+    return(out_na("Coefficients could not be estimated"))
+  }
+  
+  #checks if slope is negative
+  if (b >= 0) {
+    return(out_na("Slope must be negative (no depletion)"))
+  }
+  
+  #checks if intercept is positive
+  if (a <= 0) {
+    return(out_na("Intercept must be > 0"))
+  }
+  
+  #Estimate of population
+  N <- a / (-b)
+  
+  #checks if estimated N is bigger than real catch
+  if (N < sum(counts)) {
+    return(out_na("N smaller than total catch", N = round(N, 0)))
+  }
+  
+  # Calculate variance Delta Method - kann man das so machen?
+  vc    <- vcov(fit)
+  dN_da <- -1 / b
+  dN_db <-  a / b^2
+  
+  Var_N <- dN_da^2 * vc[1, 1] +
+           dN_db^2 * vc[2, 2] +
+           2 * dN_da * dN_db * vc[1, 2]
+  
+  #checks if variance can be calculated 
+  if (!is.finite(Var_N) || Var_N < 0) {
+    return(out_na("Variance could not be estimated", N = round(N, 0)))
+  }
+  
+  sd_N  <- sqrt(Var_N)
+  CI_95 <- 2 * sd_N
+  
+#return of results 
+  tibble(
+    N     = round(N, 0),
+    Var_N = round(Var_N, 2),
+    sd_N  = round(sd_N, 1),
+    CI_95 = round(CI_95, 0),
+    N_min = round(N - CI_95, 0),
+    N_max = round(N + CI_95, 0),
+    ok    = TRUE,
+    msg   = NA_character_
+  )
+}
+
+
+
+```
+
+#/
+#4 - Overview over sites fished -(number of species, individuals of species, totals)
+
+
+```{r}
+
+#add row for each species and number of species for each site
+
+overview_data <- data %>% 
+  filter(!is.na(site_name), !is.na(species)) %>% 
+  group_by(river_name, site_name, species) %>% 
+  summarise(
+    Stelle = first(site_name), 
+    `Befischte_Länge(m)` = first(fished_length),
+    n_individuals = n(),
+    .groups = "drop"
+  ) %>% 
+  pivot_wider(
+    names_from = species, 
+    values_from = n_individuals, 
+    values_fill = 0
+  )
+
+#extract species names 
+species_cols <- setdiff(
+  names(overview_data), 
+  c("site_name", "river_name", "Stelle", "Befischte_Länge(m)")
+)
+
+#Summarize number of total individuals per site and number of different species 
+overview_data <- overview_data %>% 
+  mutate(
+    Anzahl_Arten = rowSums(across(all_of(species_cols)) > 0, na.rm = TRUE), 
+    Gesamtfangzahl = rowSums(across(all_of(species_cols)), na.rm = TRUE)
+  ) %>% 
+    select(-site_name) %>% 
+    relocate(Anzahl_Arten, Gesamtfangzahl, .after = Stelle)
+
+#Summarize total number of fish of each species, total number of different species in sampling campain, total length fished, total number of fish caught
+
+total_row_species_data <- overview_data %>% 
+  summarise(
+    Fluss = "Total",
+    `Befischte_Länge(m)` = sum(`Befischte_Länge(m)`, na.rm = TRUE), 
+    Anzahl_Arten = sum(colSums(across(all_of(species_cols)), na.rm = TRUE) > 0),
+    Gesamtfangzahl = sum(Gesamtfangzahl, na.rm = TRUE), 
+    across(all_of(species_cols), ~ sum(.x, na.rm = TRUE))
+  )
+  
+# bind rows 
+overview_data <- bind_rows(overview_data, total_row_species_data)
+
+# remove total row
+
+rm(total_row_species_data)
+
+# show table
+
+overview_data
+
+
+
+
+
+
+```
+## 4.1. Export to xlsx.
+
+```{r}
+# Write outputs ----> add your output path and desired name of excel document
+
+#out_path <- "C:/Users/lenagraf/Documents/Seafile/ÖFG 150/4 Auswertungen/Overview_species_list_V2.xlsx"
+
+#writexl::write_xlsx(
+ # list(
+  #  overview = overview_data
+  #),
+  #path = out_path
+#)
+
+#Done
+
+
+```
+
+
+#/
+# 5 - Prepare Data for Wading
+
+## 5.1. All Data
+
+```{r}
+
+#Summarize Data to get number of species per Site and number of species per Run in seperate columns
+
+##Extract Number of Individuals per Species per run and site and total weight
+
+dat_summary <- data %>%
+  count(site_name, species, sample_id) %>% 
+  pivot_wider(
+    names_from = sample_id, 
+    values_from = n, 
+    names_glue = "Run_{sample_id}", 
+    values_fill = 0
+  ) %>%
+  mutate(
+    species_total = rowSums(across(any_of(c("Run_1", "Run_2", "Run_3"))), na.rm = TRUE)
+  ) 
+
+## Calculate weight per species per site 
+
+
+dat_weight_species_sites <- data %>% 
+  group_by(site_name, species) %>% 
+  summarise(
+    weight_g = round(sum(weight, na.rm = TRUE), 1),
+    weight_kg = round(weight_g / 1000, 2),
+    median_species_weight_g = round(median(weight, na.rm = TRUE),3),
+    .groups = "drop"
+  )
+
+
+#add median weight of all species per site 
+
+dat_weight_site <- data %>% 
+  group_by(site_name) %>% 
+  summarise(
+    median_weight_g_site = round(median(weight), 3), 
+    .groups = "drop"
+  )
+  
+
+## Add all other data 
+
+dat_metadata <- data %>% 
+  group_by(site_name, species) %>% 
+  summarise(
+    across(
+      -c(sample_id, fish_id, total_length, weight, reader_id, pit_dec, pit_hex, remark_raw_data, remark_import), 
+      first
+    ),
+      .groups = "drop"
+  ) %>% 
+  mutate(
+    fished_area = fished_length * fished_width,
+    area_ha = fished_area / 10000
+  )
+
+##Put metadata back to dat
+
+dat <- dat_metadata %>% 
+  left_join(dat_summary, by = c("site_name", "species")) %>% 
+  left_join(dat_weight_species_sites, by = c("site_name", "species")) %>% 
+  left_join(dat_weight_site, by = "site_name")
+
+## Remove unneeded dfs 
+
+rm(dat_summary, dat_weight_species_sites, dat_weight_site, dat_metadata)
+
+# Working fields
+run_cols <- grep("^Run_", names(dat), value = TRUE)
+
+
+```
+
+## 5.1.2. Filter Data.
+
+```{r}
+
+#Summarize Data to get number of species per Site and number of species per Run in seperate columns
+
+
+## if needed - filter data
+
+data_filtered <- data %>% 
+    filter(!as.character(species) %in% c("Cottus gobio", "Phoxinus phoxinus", "Gobio gobio", "Barbatula barbatula", "Alburnoides bipunctatus")) %>% 
+  filter(total_length > 75)  
+
+##Extract Number of Individuals per Species per run and site and total weight
+
+
+dat_summary_75 <- data_filtered %>%
+  count(site_name, species, sample_id) %>% 
+  pivot_wider(
+    names_from = sample_id, 
+    values_from = n, 
+    names_glue = "Run_{sample_id}", 
+    values_fill = 0
+  ) %>%
+  mutate(
+    species_total = rowSums(across(any_of(c("Run_1", "Run_2", "Run_3"))), na.rm = TRUE)
+  ) 
+
+## Calculate weight per species per site 
+
+
+dat_weight_species_sites_75 <- data_filtered %>% 
+  group_by(site_name, species) %>% 
+  summarise(
+    weight_g = round(sum(weight, na.rm = TRUE), 1),
+    weight_kg = round(weight_g / 1000, 2),
+    median_species_weight_g = round(median(weight, na.rm = TRUE),3),
+    .groups = "drop"
+  )
+
+
+## Add all other data 
+
+dat_metadata <- data_filtered %>% 
+  group_by(site_name, species) %>% 
+  summarise(
+    across(
+      -c(sample_id, fish_id, total_length, weight, reader_id, pit_dec, pit_hex, remark_raw_data, remark_import), 
+      first
+    ),
+      .groups = "drop"
+  ) %>% 
+  mutate(
+    fished_area = fished_length * fished_width,
+    area_ha = fished_area / 10000
+  )
+
+##Put metadata back to dat
+
+dat_75 <- dat_metadata %>% 
+  left_join(dat_summary_75, by = c("site_name", "species")) %>% 
+  left_join(dat_weight_species_sites_75, by = c("site_name", "species"))
+## Remove unneeded dfs 
+
+rm(dat_summary_75, dat_weight_species_sites_75, dat_metadata)
+
+# Working fields
+run_cols <- grep("^Run_", names(dat_75), value = TRUE)
+
+
+```
+
+
+#/
+##5.2. - Abundance per Species
+
+```{r}
+
+
+#Calculate estimated abundance, sd, CI, Var_N and N_min, N_max
+## all lengths
+
+
+slc_species <- dat_75 %>%
+  filter(assessment == "Seber-LeCren") %>% 
+  mutate(
+    C1 = as.numeric(Run_1),
+    C2 = as.numeric(Run_2),
+    est = map2(C1, C2, seber_le_cren_est)
+  ) %>%
+  unnest(est)
+
+
+
+## Calculate estimates of abundance on species and site level per area and length
+
+
+
+slc_species <- slc_species %>% 
+  mutate(
+    #total number of individuals per site and species
+    N_real = C1 + C2, 
+    #number of estimated individuals per site and species
+    N_estimate = ifelse(ok, pmax(N-N_real, 0), NA_real_), 
+    #weight of estimated (extra) fish 
+    weight_calc_kg = N_estimate * median_species_weight_g / 1000, 
+    #total biomass per site and species 
+    biomass_total_kg = weight_kg + weight_calc_kg,
+    #N per ha 
+    N_per_ha = ifelse(ok & area_ha > 0, N / area_ha, NA_real_), 
+    #N per 100 meter
+    N_per_100m = ifelse(ok & fished_length > 0, N / fished_length * 100, NA_real_), 
+    # Biomass per ha (kg)
+    biomass_kg_ha = ifelse(ok & area_ha > 0, biomass_total_kg / area_ha, NA_real_), 
+    #Biomass per 100 m (kg)
+    biomass_per_100m_kg = ifelse(ok & fished_length > 0, biomass_total_kg / fished_length * 100, NA_real_)
+  )
+
+
+slc_species
+
+```
+
+####5.2.1. Reorganize for output
+
+```{r}
+#round values 
+
+slc_species_output <- slc_species %>%
+  mutate(
+    N = round(N, 0),
+    N_min = round(N_min, 0),
+    N_max = round(N_max, 0),
+    Var_N = round(Var_N, 2),
+    sd_N = round(sd_N, 1),
+    CI_95 = round(CI_95, 0),
+
+    N_per_ha = round(N_per_ha, 0),
+    N_per_100m = round(N_per_100m, 0),
+
+    weight_kg = round(weight_kg, 3),
+    weight_calc_kg = round(weight_calc_kg, 3),
+    biomass_total_kg = round(biomass_total_kg, 3),
+    biomass_kg_ha = round(biomass_kg_ha, 2),
+    biomass_per_100m_kg = round(biomass_per_100m_kg, 2)
+  )
+
+```
+
+
+
+### 5.2.2. Site Level: Abundance and Biomass
+
+
+```{r}
+
+# Estimates for all species for each site. Estimates calculated by Seber LeCren
+# For biomass sum of weight of calculated N per species is used. 
+### for Ögf only bigger than 75cm - check!  
+
+slc_site <- slc_species %>% 
+  filter(assessment == "Seber-LeCren") %>% 
+  group_by(river_name, site_name) %>% 
+  summarise(
+    C1_site = sum(C1, na.rm = TRUE), 
+    C2_site = sum(C2, na.rm = TRUE), 
+    fished_length = first(fished_length), 
+    fished_width = first(fished_width), 
+    fished_area = first(fished_area), 
+    area_ha = first(area_ha), 
+    n_species = n_distinct(species), 
+    weight_real_kg = sum(weight_kg, na.rm = TRUE), 
+    biomass_species_sum_kg = sum(biomass_total_kg, na.rm = TRUE), 
+    species_total = first(species_total),
+    .groups = "drop"
+  ) %>% 
+  mutate(
+    est = map2(C1_site, C2_site, seber_le_cren_est)
+  ) %>% 
+  unnest(est) %>% 
+  mutate(
+    #Abundance estimates per ha, 100 meter 
+    N_site = N,
+    N_per_ha = ifelse(area_ha >0, N_site / area_ha, NA_real_), 
+    N_per_100m = ifelse(fished_length > 0, N_site / fished_length * 100, NA_real_), 
+    #Biomass estimates per ha, 100 meter
+    biomass_kg_ha = ifelse(area_ha > 0, biomass_species_sum_kg / area_ha, NA_real_), 
+    biomass_per_100m_kg = ifelse(fished_length > 0, biomass_species_sum_kg / fished_length * 100, NA_real_)
+  )
+
+#Show Output
+
+slc_site
+
+```
+
+
+
+
+
+#### 5.2.3.Reorganize for output 
+
+```{r}
+
+#round
+
+slc_site_output <- slc_site %>%
+  mutate(
+    N_site = round(N_site, 0),
+    N_min = round(N_min, 0),
+    N_max = round(N_max, 0),
+
+    N_per_ha = round(N_per_ha, 0),
+    N_per_100m = round(N_per_100m, 0),
+    
+    weight_real_kg = round(weight_real_kg, 3),
+    biomass_species_sum_kg = round(biomass_species_sum_kg, 3),
+    biomass_kg_ha = round(biomass_kg_ha, 2),
+    biomass_per_100m_kg = round(biomass_per_100m_kg, 2)
+  )
+
+
+
+
+
+```
+
+### 5.2.4 Export output of stock calculation to excel
+```{r}
+
+
+# Write outputs ----> add your output path and desired name of excel document
+
+out_path <- "C:/Users/lenagraf/Documents/Seafile/ÖFG 150/4 Auswertungen/Stock_Calculations_all.xlsx"
+
+writexl::write_xlsx(
+  list(
+    per_species = slc_species_output,
+    per_site    = slc_site_output
+  ),
+  path = out_path
+)
+
+#Done
+
+```
+
+
+
+### 5.2.5 Mean Abundance and Biomass on river level
+
+##### 5.2.5.1.Mean Abundance and Biomass for each river
+
+```{r}
+
+#Calculate mean abundance and biomass for each river - each site per river represented in equal proportions 
+
+mean_river_est_site <- slc_site %>% 
+  group_by(river_name) %>% 
+  summarise(
+    N_sites = n(), 
+    N_per_ha_mean = mean(N_per_ha, na.rm = TRUE), 
+    sd_N_per_ha = sd(N_per_ha, na.rm = TRUE), 
+    N_per_100m_mean = mean(N_per_100m,na.rm = TRUE),
+    sd_N_per_100m = sd(N_per_100m, na.rm = TRUE), 
+    biomass_kg_ha_mean = mean(biomass_kg_ha, na.rm = TRUE), 
+    sd_biomass_kg_ha = sd(biomass_kg_ha, na.rm = TRUE), 
+    biomass_per_100m_kg_mean = mean(biomass_per_100m_kg, na.rm = TRUE),
+    sd_biomass_per_100m_kg = sd(biomass_per_100m_kg, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+#Show output
+
+
+mean_river_est_site
+
+
+
+
+```
+
+
+
+
+
+#####5.2.5.1 Mean Abundance and Biomass for each river per species
+
+```{r}
+
+
+#Calculate mean abudance and biomass for each river for each species each site per river represented in equal proportions 
+##take into account all sites, sites with 0 individuals of a species will be calculated into the mean, would be nice, not working right now. 
+
+slc_species_site <- slc_species %>%
+  filter(ok) %>%
+  group_by(river_name, site_name, species) %>%
+  summarise(
+    N = first(N),
+    N_per_ha = first(N_per_ha),
+    N_per_100m = first(N_per_100m),
+    biomass_kg_ha = first(biomass_kg_ha),
+    biomass_per_100m_kg = first(biomass_per_100m_kg),
+    .groups = "drop"
+  )
+
+species_all_sites <- slc_species_site %>%
+  group_by(river_name) %>%
+  complete(
+    site_name,
+    species,
+    fill = list(
+      N = 0,
+      N_per_ha = 0,
+      N_per_100m = 0,
+      biomass_kg_ha = 0,
+      biomass_per_100m_kg = 0
+    )
+  ) %>%
+  ungroup()
+
+
+
+mean_river_est_species <- slc_species %>% 
+  group_by(river_name, species) %>% 
+  summarise(
+    n_sites = n_distinct(site_name),
+    species_totals_mean = round(mean(species_total, na.rm = TRUE), 0), 
+    N_per_ha_mean = mean(N_per_ha, na.rm = TRUE), 
+    sd_N_per_ha = sd(N_per_ha, na.rm = TRUE), 
+    N_per_100m_mean = mean(N_per_100m,na.rm = TRUE),
+    sd_N_per_100m = sd(N_per_100m, na.rm = TRUE), 
+    biomass_kg_ha_mean = mean(biomass_kg_ha, na.rm = TRUE), 
+    sd_biomass_kg_ha = sd(biomass_kg_ha, na.rm = TRUE), 
+    biomass_per_100m_kg_mean = mean(biomass_per_100m_kg, na.rm = TRUE),
+    sd_biomass_per_100m_kg = sd(biomass_per_100m_kg, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+#Show table 
+mean_river_est_species
+
+
+
+
+```
+
+##### 5.2.6.1. Round and save as .xlsx 
+
+```{r}
+
+##round output for river and all species means 
+
+mean_river_est_site_output <- mean_river_est_site %>% 
+  mutate(
+    N_per_ha_mean = round(N_per_ha_mean, 0), 
+    sd_N_per_ha = round(sd_N_per_ha, 0), 
+    N_per_100m_mean = round(N_per_100m_mean,0),
+    sd_N_per_100m = round(sd_N_per_100m, 0), 
+    biomass_kg_ha_mean = round(biomass_kg_ha_mean, 2), 
+    sd_biomass_kg_ha = round(sd_biomass_kg_ha, 2), 
+    biomass_per_100m_kg_mean = round(biomass_per_100m_kg_mean, 2),
+    sd_biomass_per_100m_kg = round(sd_biomass_per_100m_kg, 2),
+  )
+
+
+
+mean_river_est_species_output <- mean_river_est_species %>% 
+  mutate(
+    N_per_ha_mean = round(N_per_ha_mean, 0), 
+    sd_N_per_ha = round(sd_N_per_ha, 0), 
+    N_per_100m_mean = round(N_per_100m_mean,0),
+    sd_N_per_100m = round(sd_N_per_100m, 0), 
+    biomass_kg_ha_mean = round(biomass_kg_ha_mean, 2), 
+    sd_biomass_kg_ha = round(sd_biomass_kg_ha, 2), 
+    biomass_per_100m_kg_mean = round(biomass_per_100m_kg_mean, 2),
+    sd_biomass_per_100m_kg = round(sd_biomass_per_100m_kg, 2),
+  )
+
+# Write outputs ----> add your output path and desired name of excel document
+
+#out_path <- "C:/Users/lenagraf/Documents/Seafile/ÖFG 150/4 Auswertungen/mean_stock_per_river.xlsx"
+
+#writexl::write_xlsx(
+ # list(
+  #  mean_species = mean_river_est_species_output,
+   # mean_site    = mean_river_est_site_output
+ # ),
+#  path = out_path
+#)
+
+mean_river_est_site_output
+
+mean_river_est_species_output
+
+```
+
+
+
+#/
+## 5.3. - ÖFG150 Abundance for totals and share of species
+
+
+```{r}
+
+## Calculate abundance and biomass per totals of each site - estimate species abundance by share of totals. 
+
+
+site_slc_total <- dat_75 %>% 
+  group_by(river_name, site_name) %>% 
+  summarise(
+    C1_site = sum(Run_1, na.rm = TRUE), 
+    C2_site = sum(Run_2, na.rm = TRUE),
+    fished_length = first(fished_length), 
+    fished_width = first(fished_width), 
+    fished_area = first(fished_area), 
+    area_ha = first(area_ha), 
+    n_species = n_distinct(species), 
+    weight_real_kg = sum(weight_kg, na.rm = TRUE), 
+    species_total = first(species_total),
+    .groups = "drop"
+  ) %>% 
+  mutate(
+    est = map2(C1_site, C2_site, seber_le_cren_est)
+  ) %>% 
+  unnest(est) %>% 
+  mutate(
+    #Abundance estimates per ha, 100 meter 
+    N_site = N,
+    N_per_ha = ifelse(area_ha > 0, N_site / area_ha, NA_real_), 
+    N_per_100m = ifelse(fished_length > 0, N_site / fished_length * 100, NA_real_)
+  )
+
+
+
+species_prop <- dat_75 %>% 
+  left_join(
+    site_slc_total %>% 
+      select(river_name, site_name, C1_site, C2_site, N_site, N_per_ha, N_per_100m), 
+    by = c("river_name", "site_name")) %>% 
+  group_by(river_name, site_name) %>% 
+  mutate(
+    #Abundance
+    species_share = species_total / sum(species_total, na.rm = TRUE), 
+    N_prop = N_site * species_share, 
+    N_prop_per_ha = N_prop / area_ha, 
+    N_prop_per_100m = N_prop / fished_length * 100, 
+    #Biomass
+    N_calc = N_prop - species_total, 
+    weight_calc_kg = N_calc * median_species_weight_g / 1000, 
+    biomass_prop_kg = weight_kg + weight_calc_kg, 
+    biomass_prop_kg_ha = ifelse(area_ha > 0, biomass_prop_kg / area_ha, NA_real_), 
+    biomass_prop_kg_100m = ifelse(fished_length > 0, biomass_prop_kg / fished_length * 100, NA_real_)
+  ) %>% 
+  ungroup() %>% 
+  select(
+    river_name, 
+    site_name, 
+    species, 
+    area_ha, 
+    fished_length, 
+    Run_1, 
+    Run_2, 
+    species_total,
+    C1_site, 
+    C2_site, 
+    N_site, 
+    N_per_ha, 
+    N_per_100m, 
+    species_share, 
+    N_prop, 
+    N_prop_per_ha, 
+    N_prop_per_100m,
+    weight_kg,
+    weight_calc_kg,
+    biomass_prop_kg,
+    biomass_prop_kg_ha, 
+    biomass_prop_kg_100m, 
+    
+  )
+
+#Add Sum of weight of all species to Seber-LeCren per site 
+
+
+weight_sum_site <- species_prop %>% 
+  group_by(site_name) %>% 
+  summarise(
+    biomass_site_total_kg = sum(biomass_prop_kg, na.rm = TRUE)
+  )
+ 
+
+site_slc_total <- site_slc_total %>% 
+  left_join(weight_sum_site, by = "site_name") %>% 
+  mutate(
+    biomass_kg_ha = biomass_site_total_kg / area_ha, 
+    biomass_kg_100m = biomass_site_total_kg /fished_length * 100
+  )
+
+
+#Show results 
+
+site_slc_total
+
+
+species_prop
+
+```
+
+### 5.3.1 Export as xlsx
+
+```{r}
+
+# Round values N to integer, kg to 2 decimals 
+
+
+site_slc_total_round <- site_slc_total %>% 
+  mutate(
+    #Abundance and estimates
+    N_site = round(N_site, 0),
+    N_min = round(N_min, 0),
+    N_max = round(N_max, 0),
+    Var_N = round(Var_N, 0),
+    sd_N = round(sd_N, 0),
+    CI_95 = round(CI_95, 0),
+    #Abundance per ha and 100 m 
+    N_per_ha = round(N_per_ha, 0),
+    N_per_100m = round(N_per_100m, 0),
+    # Biomass 
+    weight_real_kg = round(weight_real_kg, 3),
+    biomass_site_total_kg = round(biomass_site_total_kg, 3),
+    biomass_kg_ha = round(biomass_kg_ha, 2),
+    biomass_kg_100m = round(biomass_kg_100m, 2)
+  )
+    
+
+#Round species table 
+
+species_prop_round <- species_prop %>% 
+  mutate(
+    #Abundance
+    N_prop = round(N_prop, 0),
+    #Share of species of total catch
+    species_share = round(species_share, 2),
+    #Abundance per ha and 100m
+    N_prop_per_ha = round(N_prop_per_ha, 0),
+    N_prop_per_100m = round(N_prop_per_100m, 0),
+    #Biomass
+    weight_kg = round(weight_kg, 3),
+    weight_calc_kg = round(weight_calc_kg, 3),
+    biomass_prop_kg = round(biomass_prop_kg, 3),
+    biomass_prop_kg_ha = round(biomass_prop_kg_ha, 2),
+    biomass_prop_kg_100m = round( biomass_prop_kg_100m, 2)
+  )
+  
+# Write outputs ----> add your output path and desired name of excel document
+
+#out_path <- "C:/Users/lenagraf/Documents/Seafile/ÖFG 150/4 Auswertungen/20260904_Stock_Site(ohneSchneider).xlsx"
+
+#writexl::write_xlsx(
+ # list(
+ #   species_site = species_prop_round,
+ #   total_site    = site_slc_total_round
+#  ),
+#  path = out_path
+#)
+
+
+```
+
+
+
+###5.3.3. Mean per river 
+
+
+```{r}
+mean_river_total <- site_slc_total %>%
+  group_by(river_name) %>%
+  summarize(
+    N_per_ha_m = mean(N_per_ha, na.rm = TRUE),
+    sd_N_per_ha = sd(N_per_ha, na.rm = TRUE),
+    N_per_100m_m = mean(N_per_100m, na.rm = TRUE), 
+    sd_N_per_100m = sd(N_per_100m, na.rm = TRUE),
+    n_sites = n(),
+    biomass_kg_ha_m = mean(biomass_kg_ha, na.rm = TRUE), 
+    sd_biomass_kg_ha = sd(biomass_kg_ha, na.rm = TRUE),
+    biomass_per_100m_kg_m = mean(biomass_kg_100m, na.rm = TRUE),
+    sd_biomass_per_100m_kg = sd(biomass_kg_100m, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+mean_river_total
+```
+
+
+
+###5.3.3. Mean per species and River 
+
+
+```{r}
+
+
+#Calculate mean abundance and biomass for each river for each species each site per river represented in equal proportions 
+##take into account all sites, sites with 0 individuals of a species will be calculated into the mean
+
+species_prop_complete <- species_prop %>%
+  select(river_name, site_name, species, N_prop, N_prop_per_ha, N_prop_per_100m, biomass_prop_kg_ha, biomass_prop_kg_100m) %>%
+  mutate(
+    species = as.character(species), 
+    site_name = as.character(site_name)) %>% 
+  group_by(river_name) %>%
+  complete(
+    site_name, 
+    species, 
+    fill = list(N_prop_per_ha = 0, N_prop_per_100m = 0, biomass_prop_kg_ha = 0, biomass_prop_kg_100m  = 0)
+  ) %>%
+  ungroup()
+
+
+mean_river_species_prop <- species_prop_complete %>%
+  group_by(river_name, species) %>%
+  summarise(
+    N_prop = mean(N_prop, na.rm = TRUE),
+    N_prop_per_ha_m = mean(N_prop_per_ha, na.rm = TRUE),
+    sd_N_prop_per_ha = sd(N_prop_per_ha, na.rm = TRUE),
+    N_prop_per_100m_m = mean(N_prop_per_100m, na.rm = TRUE),
+    sd_N_prop_per_100m = sd(N_prop_per_100m, na.rm = TRUE),
+    n_sites = n(),
+    n_present = sum(N_prop_per_ha > 0),
+    biomass_prop_kg_ha_m = mean(biomass_prop_kg_ha, na.rm = TRUE), 
+    sd_biomass_prop_kg_ha = sd(biomass_prop_kg_ha, na.rm = TRUE), 
+    biomass_prop_kg_100m_m = mean(biomass_prop_kg_100m, na.rm = TRUE), 
+    sd_biomass_prop_kg_100m = sd(biomass_prop_kg_100m, na.rm = TRUE), 
+    .groups = "drop"
+  )
+
+# Beispiel: Ein Fluss
+mean_river_species_prop %>%
+  filter(river_name == "Erlauf Tormäuer") %>%
+  arrange(desc(N_prop_per_ha_m))
+
+```
+
+#### 5.3.3.1 Export to xlsx. 
+
+```{r}
+
+#round values 
+
+mean_river_total_round <- mean_river_total %>% 
+  mutate(
+    #Abundance and estimates
+    n_sites = round(n_sites, 0),
+    #Abundance per ha and 100 m 
+    N_per_ha = round(N_per_ha_m, 0),
+    sd_N_per_ha = round(sd_N_per_ha, 0),
+    N_per_100m = round(N_per_100m_m, 0),
+    sd_N_per_100m = round(sd_N_per_100m),
+    # Biomass 
+    biomass_kg_ha = round(biomass_kg_ha_m, 2),
+    sd_biomass_kg_ha = round(sd_N_per_ha, 2), 
+    biomass_per_100m_kg = round(biomass_per_100m_kg_m, 2), 
+    sd_N_per_100m = round(sd_biomass_per_100m_kg, 2)
+  )
+    
+
+#Round species table 
+
+mean_river_species_prop_round <- mean_river_species_prop %>% 
+  mutate(
+    #Abundance
+    N_prop = round(N_prop, 0),
+    #Abundance per ha and 100m
+    N_prop_per_ha = round(N_prop_per_ha_m, 0),
+    sd_N_prop_per_ha = round(sd_N_prop_per_ha, 0), 
+    N_prop_per_100m = round(N_prop_per_100m_m, 0),
+    sd_N_prop_per_100m = round(sd_N_prop_per_100m, 0),
+    #Biomass
+    biomass_prop_kg_ha = round(biomass_prop_kg_ha_m, 2),
+    sd_biomass_prop_kg_ha = round(sd_biomass_prop_kg_ha, 2), 
+    biomass_prop_kg_100m = round( biomass_prop_kg_100m_m, 2), 
+    sd_biomass_prop_kg_100m = round(sd_N_prop_per_100m, 2)
+  )
+
+
+
+
+
+
+
+
+# Write outputs ----> add your output path and desired name of excel document
+
+#out_path <- "C:/Users/lenagraf/Documents/Seafile/ÖFG 150/4 Auswertungen/20260904_Stock_River_Mean.xlsx"
+
+#writexl::write_xlsx(
+#  list(
+#    species_per_site = mean_river_species_prop_round,
+#    total_per_site    = mean_river_total_round
+#  ),
+#  path = out_path
+#)
+
+```
+
+
+
+
+
+#/
+#6 - Length-Frequency Plots
+
+## 6.1. Split Dataset into Rivers
+
+```{r}
+
+data_river_list <- data %>% 
+  group_by(river_name) %>% 
+  group_split()
+
+river_names <- data %>% 
+  distinct(river_name) %>% 
+  pull(river_name)
+
+names(data_river_list) <- river_names
+
+```
+
+
+## 6.2. N label for plot
+```{r}
+N_LF <-
+  data %>%
+  group_by(river_name, species) %>% 
+  summarise(N = n(), .groups = "drop") %>% 
+  mutate(
+    label = paste0("N = ", N))
+
+N_LF
+```
+
+
+
+## 6.3. LF Overview over all species in one River
+
+```{r}
+
+
+#Length frequency plots for all species in each river
+##No fixed scales
+
+
+LF_plot_overview <- data %>% 
+  group_by(river_name) %>% ##insert site_name etc
+  group_map(~ {
+    river <- .y$river_name
+    df_river <- .x
+    text_river <- N_LF %>% 
+      filter(river_name == river)
+    
+    ggplot(df_river,
+         aes(total_length)) +
+      
+  
+  geom_histogram(
+                 binwidth = 20,
+                 boundary = 0,
+                 color ="black",
+                 position ="stack") +
+
+  scale_x_continuous(
+    name = "total length [mm]",
+    ) +
+  
+  scale_y_continuous(name = "number of individuals",
+                     ) +
+  
+  theme_classic() +
+    
+  ggtitle(.y$river_name) +
+  
+  theme(
+    plot.title = element_text(size = 14),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    axis.text.x = element_text(size = 12),
+    axis.text.y = element_text(size = 12),
+    legend.text = element_text(size = 11)
+  ) +
+  
+  facet_wrap(~ species, scales = "free") + 
+      
+      
+  geom_text(data = text_river, aes(x = Inf, y = Inf, label = label), inherit.aes = FALSE, size = 5, hjust = 1.1, vjust = 1.1) 
+    
+    
+  })
+
+names(LF_plot_overview) <- data %>% 
+  distinct(river_name) %>% 
+  pull(river_name)
+
+
+##plot all
+
+for (p in LF_plot_overview) {
+  print(p)
+  }
+
+
+```
+## 6.4. Adapt the LF to specific needs
+
+```{r}
+#Function for Length frequency
+
+plot_length_freq <- function(data, 
+                              facet_var = "species",
+                              color_var = NULL,
+                              binwidth = 20,
+                              x_breaks = NULL,
+                              x_limits = NULL,
+                              title = NULL,
+                              show_n = TRUE,
+                              free_scales = "free") {
+  
+  if (is.null(title)) title <- ""
+  
+  # N-Label
+  if (show_n) {
+    if (!is.null(color_var)) {
+      text_df <- data %>%
+        group_by(.data[[facet_var]], .data[[color_var]]) %>%
+        summarise(n = n(), .groups = "drop") %>%
+        group_by(.data[[facet_var]]) %>%
+        summarise(label = paste(paste0(.data[[color_var]], ": n=", n), collapse = "\n"), .groups = "drop")
+    } else {
+      text_df <- data %>%
+        group_by(.data[[facet_var]]) %>%
+        summarise(label = paste0("n = ", n()), .groups = "drop")
+    }
+  }
+  
+  # Basis-Aesthetics
+  if (!is.null(color_var)) {
+    p <- ggplot(data, aes(x = total_length, fill = .data[[color_var]]))
+  } else {
+    p <- ggplot(data, aes(x = total_length))
+  }
+  
+  p <- p +
+    geom_histogram(
+      binwidth = binwidth,
+      boundary = 0,
+      color = "black",
+      alpha = 0.7,
+      position = "stack"
+    ) +
+    scale_x_continuous(
+      name = "Total length [mm]",
+      breaks = if (!is.null(x_breaks)) x_breaks else waiver(),
+      limits = x_limits
+    ) +
+    scale_y_continuous(name = "Number of individuals") +
+    theme_classic() +
+    ggtitle(title) +
+    theme(
+      plot.title = element_text(size = 14),
+      axis.title = element_text(size = 14),
+      axis.text = element_text(size = 12),
+      legend.text = element_text(size = 11),
+      strip.text = element_text(face = "italic", size = 12)
+    ) +
+    facet_wrap(as.formula(paste("~", facet_var)), scales = free_scales)
+  
+  if (show_n) {
+    p <- p + geom_text(
+      data = text_df,
+      aes(x = Inf, y = Inf, label = label),
+      inherit.aes = FALSE,
+      size = 4, hjust = 1.1, vjust = 1.1
+    )
+  }
+  
+  return(p)
+}
+
+##Plot desired length-frequency diagram 
+##add needed values
+##add filter 
+##color_var = plot different values in different colors
+##x_breaks = define breaks. e.g. x_breaks = seq(0,600, 50): min = 0, max = 600, breaks by 50mm
+##free_scales: 
+
+
+BF_Schwarza <- data %>% 
+  filter(river_name == "Schwarza") %>% 
+  filter(species == "Salmo trutta") %>% 
+  plot_length_freq(
+    facet_var = "site_name", 
+    binwidth = 25,
+    x_breaks = seq(0, 600, 50), 
+    free_scales = "fixed",
+    title = "Bachforelle"
+  )
+
+BF_Schwarza
+
+
+```
+
+
+#### export
+```{r}
+#ggsave("LF_plot.jpg", LF_plot, width = 8, height = 5, units = "in", dpi = 300)
+```
+
+#/
+#8 - DeLury - share of species
+
+```{r}
+
+##Total DeLury over all species 
+
+site_del_total <- dat_75 %>% 
+  group_by(river_name, site_name) %>% 
+  summarise(
+    C1_site = sum(Run_1, na.rm = TRUE), 
+    C2_site = sum(Run_2, na.rm = TRUE),
+    C3_site = sum(Run_3, na.rm = TRUE),      
+    fished_length = first(fished_length), 
+    fished_width  = first(fished_width), 
+    fished_area   = first(fished_area), 
+    area_ha       = first(area_ha), 
+    n_species     = n_distinct(species), 
+    weight_real_kg = sum(weight_kg, na.rm = TRUE), 
+    species_total  = first(species_total),
+    .groups = "drop"
+  ) %>% 
+  mutate(
+    est = pmap(list(C1_site, C2_site, C3_site), ~ delury_est(c(...)))
+  ) %>% 
+  unnest(est) %>% 
+  mutate(
+    N_site      = N,
+    N_per_ha    = ifelse(area_ha > 0, N_site / area_ha, NA_real_), 
+    N_per_100m  = ifelse(fished_length > 0, N_site / fished_length * 100, NA_real_)
+  )
+
+##Proportional calculation of N per species 
+
+### Join data and calculate percentage of species
+
+species_prop_del <- dat_75 %>% 
+  left_join(
+    site_del_total %>% 
+      select(river_name, site_name, N_site, N_per_ha, N_per_100m), 
+    by = c("river_name", "site_name")
+  ) %>% 
+  group_by(river_name, site_name) %>% 
+  mutate(
+    species_share   = species_total / sum(species_total, na.rm = TRUE), 
+    N_prop          = N_site * species_share, 
+    N_prop_per_ha   = N_prop / area_ha, 
+    N_prop_per_100m = N_prop / fished_length * 100, 
+    
+    N_calc            = N_prop - species_total, 
+    weight_calc_kg    = N_calc * median_species_weight_g / 1000, 
+    biomass_prop_kg   = weight_kg + weight_calc_kg, 
+    biomass_prop_kg_ha   = ifelse(area_ha > 0, biomass_prop_kg / area_ha, NA_real_), 
+    biomass_prop_kg_100m = ifelse(fished_length > 0, biomass_prop_kg / fished_length * 100, NA_real_)
+  ) %>% 
+  ungroup()
+
+##add weight
+weight_sum_site_del <- species_prop_del %>% 
+  group_by(site_name) %>% 
+  summarise(biomass_site_total_kg = sum(biomass_prop_kg, na.rm = TRUE))
+
+##combine weight and abundance 
+site_del_total <- site_del_total %>% 
+  left_join(weight_sum_site_del, by = "site_name") %>% 
+  mutate(
+    biomass_kg_ha   = biomass_site_total_kg / area_ha, 
+    biomass_kg_100m = biomass_site_total_kg / fished_length * 100
+  )
+
+
+```
+
